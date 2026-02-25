@@ -1,6 +1,6 @@
-# Globus Bank Conversational AI Agent
+# Conversational AI Agent
 
-A fully offline conversational AI agent for Globus Bank Nigeria, built with local LLM inference. Handles customer inquiries about products, accounts, transactions, and card services.
+A fully offline conversational AI agent, built with local LLM inference. Handles customer inquiries about products, accounts, transactions, and card services.
 
 ## Features
 
@@ -443,7 +443,7 @@ python scripts/ingest_products.py
 
 ## License
 
-Internal use — Globus Bank Nigeria
+Internal use — Open
 
 ## Support
 
