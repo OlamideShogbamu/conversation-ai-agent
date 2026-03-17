@@ -5,6 +5,7 @@ from src.inference.embedder import Embedder
 from src.memory.vector_store import VectorStore
 from src.tools.registry import ToolRegistry
 from src.tools.banking import create_banking_tools
+from src.rag.retriever import Retriever
 from src.agent.orchestrator import AgentOrchestrator
 from src.db.schema import init_db
 from config.settings import BASE_DIR
@@ -33,7 +34,8 @@ def init_agent():
 
     create_banking_tools(tool_registry, _vector_store, _embedder)
 
-    agent = AgentOrchestrator(llm, tool_registry)
+    retriever = Retriever(_vector_store, _embedder)
+    agent = AgentOrchestrator(llm, tool_registry, retriever=retriever)
     print("Agent ready!")
 
 @app.route("/chat", methods=["POST"])

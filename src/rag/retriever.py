@@ -1,3 +1,5 @@
+import time
+
 from src.memory.vector_store import VectorStore
 from src.inference.embedder import Embedder
 
@@ -14,13 +16,18 @@ class Retriever:
         category: str | None = None,
         score_threshold: float = 0.50,
     ) -> list[dict]:
+        print(f"[RAG] Embedding query: '{query[:60]}'...", flush=True)
+        t0 = time.time()
         query_vector = self.embedder.embed(query)
+        print(f"[RAG] Embedding done ({time.time() - t0:.1f}s), searching vector store...", flush=True)
         results = self.vector_store.search(
             query_vector=query_vector,
             limit=limit,
             category=category,
         )
-        return [r for r in results if r.get("score", 0) >= score_threshold]
+        filtered = [r for r in results if r.get("score", 0) >= score_threshold]
+        print(f"[RAG] Retrieved {len(filtered)} result(s) above threshold (score >= {score_threshold})", flush=True)
+        return filtered
 
     def format_context(self, results: list[dict]) -> str:
         if not results:

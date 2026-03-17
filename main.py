@@ -64,7 +64,7 @@ def main():
 
     # Handle product ingestion
     if args.ingest_products:
-        products_path = BASE_DIR / "products.txt"
+        products_path = BASE_DIR / "products.md"
         if products_path.exists():
             count = ingest_products(str(products_path), embedder, vector_store)
             print(f"Ingested {count} products into vector store.")

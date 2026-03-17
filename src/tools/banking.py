@@ -247,11 +247,9 @@ def create_banking_tools(
             customer = CustomerRepository.get_by_account_no(account_no)
             if customer:
                 return (
-                    f"Account: {customer['account_no']}\n"
-                    f"Name: {customer['account_name']}\n"
-                    f"Type: {customer['account_type']}\n"
-                    f"Currency: {customer['currency']}\n"
-                    f"Balance: {customer['currency']} {customer['current_balance']:,.2f}"
+                    f"Customer name is {customer['account_name']}. "
+                    f"Account type is {customer['account_type']}. "
+                    f"Current balance is {customer['currency']} {customer['current_balance']:,.2f}."
                 )
             return "Account not found. Please verify your account number."
 
@@ -259,14 +257,13 @@ def create_banking_tools(
             customer = CustomerRepository.get_by_account_no(account_no)
             if customer:
                 return (
-                    f"**Account Details**\n"
-                    f"- Account Number: {customer['account_no']}\n"
-                    f"- Account Name: {customer['account_name']}\n"
-                    f"- Account Type: {customer['account_type']}\n"
-                    f"- Product: {customer['product_description']}\n"
-                    f"- Currency: {customer['currency']}\n"
-                    f"- Balance: {customer['currency']} {customer['current_balance']:,.2f}\n"
-                    f"- Opened: {customer['account_open_date']}"
+                    f"Customer name is {customer['account_name']}. "
+                    f"Account number is {customer['account_no']}. "
+                    f"Account type is {customer['account_type']}. "
+                    f"Product is {customer['product_description']}. "
+                    f"Currency is {customer['currency']}. "
+                    f"Current balance is {customer['currency']} {customer['current_balance']:,.2f}. "
+                    f"Account opened on {customer['account_open_date']}."
                 )
             return "Account not found."
 
@@ -294,13 +291,13 @@ def create_banking_tools(
             if not transactions:
                 return "No transactions found for this account."
 
-            lines = [f"Recent transactions for {account_no}:\n"]
-            for txn in transactions:
+            lines = [f"Here are the {len(transactions)} most recent transactions:"]
+            for i, txn in enumerate(transactions, 1):
                 amount = txn["transaction_amount"]
-                sign = "+" if txn["transaction_type"] == "Credit" else ""
+                txn_type = txn["transaction_type"]
                 lines.append(
-                    f"- {txn['transaction_date']}: {sign}₦{amount:,.2f} | "
-                    f"{txn['narration']} | {txn['transaction_status']}"
+                    f"{i}. On {txn['transaction_date']}, a {txn_type} of NGN {amount:,.2f} "
+                    f"for '{txn['narration']}' with status {txn['transaction_status']}."
                 )
             return "\n".join(lines)
 
@@ -310,11 +307,10 @@ def create_banking_tools(
                 return "No transaction history found."
 
             return (
-                f"**Transaction Summary for {account_no}**\n"
-                f"- Total Transactions: {summary['total_transactions']}\n"
-                f"- Total Credits: ₦{summary['total_credits'] or 0:,.2f}\n"
-                f"- Total Debits: ₦{summary['total_debits'] or 0:,.2f}\n"
-                f"- Failed Transactions: {summary['failed_count']}"
+                f"Total number of transactions is {summary['total_transactions']}. "
+                f"Total credits amount to NGN {summary['total_credits'] or 0:,.2f}. "
+                f"Total debits amount to NGN {summary['total_debits'] or 0:,.2f}. "
+                f"Number of failed transactions is {summary['failed_count']}."
             )
 
         return "Invalid action."

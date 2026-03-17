@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Ingest products.txt into Qdrant vector store.
+Ingest products.md into Qdrant vector store.
 Clears existing vector data before re-ingesting.
 
 Usage:
@@ -16,7 +16,7 @@ from src.inference.embedder import Embedder
 from src.memory.vector_store import VectorStore
 from src.rag.ingest import ingest_products
 
-PRODUCTS_PATH = BASE_DIR / "products.txt"
+PRODUCTS_PATH = BASE_DIR / "products.md"
 
 
 def main():
@@ -38,7 +38,7 @@ def main():
     embedder.load()
     print("      Done.")
 
-    print("\n[3/3] Ingesting products.txt...")
+    print("\n[3/3] Ingesting products.md...")
     count = ingest_products(str(PRODUCTS_PATH), embedder, vs)
     print(f"      Done. {count} products ingested.\n")
 

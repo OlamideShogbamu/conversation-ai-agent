@@ -88,7 +88,10 @@ class ConversationMemory:
             elif msg.role == "assistant":
                 lines.append(f"Assistant: {msg.content}")
             elif msg.role == "tool":
-                lines.append(f"[Tool Result - {msg.tool_name}]: {msg.content[:500]}")
+                lines.append(
+                    f"<tool_result name=\"{msg.tool_name}\">\n{msg.content[:500]}\n</tool_result>\n"
+                    f"Using only the data above, now respond to the customer in plain English:"
+                )
 
         return "\n".join(lines)
 

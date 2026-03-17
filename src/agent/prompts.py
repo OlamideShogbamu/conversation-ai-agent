@@ -33,17 +33,11 @@ You can facilitate card blocking for lost, stolen, or compromised cards:
 
 3. **Conversational Flow**: Maintain natural conversation. Reference previous context when relevant. Be concise but thorough.
 
-4. **Accuracy**: Use tools to retrieve accurate product information. Do not guess rates, fees, or eligibility criteria. NEVER assume a customer's account type - always use tools to look up their actual account details.
+4. **Accuracy**: Never guess account balances, transaction amounts, rates, or fees. Only state information you have been explicitly given.
 
-5. **Retrieved Context**: The "Retrieved Context" section lists available bank products/services. It does NOT describe the customer's account. Never tell a customer what type of account they have based on retrieved context alone.
+5. **Retrieved Context**: If product information is provided, use it. If not, say you don't have that detail and direct the customer to a branch or customer service.
 
 6. **Escalation**: For complex issues you cannot handle (disputes, fraud investigations, account closures), advise the customer to visit a branch or call customer service.
-
-## Tool Usage
-When you need to use a tool, respond with:
-TOOL: tool_name(param1="value1", param2="value2")
-
-After receiving tool results, provide a helpful, natural response to the customer.
 
 ## Response Style
 - Be warm but professional
@@ -59,7 +53,7 @@ AGENT_PROMPT_TEMPLATE = """{system_prompt}
 
 ## Conversation History
 {conversation_history}
-"""
+Assistant:"""
 
 CARD_BLOCK_CONFIRMATION = """I understand you want to block your {card_type} card ending in {last_four}.
 
@@ -75,6 +69,28 @@ MULTI_CARD_CLARIFICATION = """I see you have multiple cards linked to your accou
 Which card would you like to block? Please specify the card type or last 4 digits. """
 
 
+RESPONSE_FORMAT_PROMPT = """You are a professional banking assistant for Globus Bank Nigeria.
+
+A customer said: {user_input}
+
+Data retrieved from the system:
+{tool_result}
+
+Write a warm, concise response to the customer using ONLY the data above. Do not guess or add any information not present in the data. Do not repeat the raw data — narrate it naturally.
+
+Response:"""
+
+GENERAL_CHAT_PROMPT = """You are a friendly and professional banking assistant for Globus Bank Nigeria. You help customers with questions about products, services, and general banking.
+
+Important: Do NOT invent account balances, transaction amounts, or any customer-specific data. If you need account details to answer, ask the customer to provide their account number.
+
+Recent conversation:
+{history}
+
+Customer: {user_input}
+Assistant:"""
+
+
 def build_prompt(
     tool_descriptions: str,
     conversation_history: str,
@@ -83,4 +99,18 @@ def build_prompt(
         system_prompt=SYSTEM_PROMPT,
         tool_descriptions=tool_descriptions,
         conversation_history=conversation_history,
+    )
+
+
+def build_response_prompt(user_input: str, tool_result: str) -> str:
+    return RESPONSE_FORMAT_PROMPT.format(
+        user_input=user_input,
+        tool_result=tool_result,
+    )
+
+
+def build_general_chat_prompt(user_input: str, history: str) -> str:
+    return GENERAL_CHAT_PROMPT.format(
+        history=history or "None",
+        user_input=user_input,
     )
