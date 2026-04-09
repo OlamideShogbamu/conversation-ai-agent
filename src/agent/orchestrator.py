@@ -1,3 +1,4 @@
+import json
 import time
 
 from src.inference.llm import LLMEngine
@@ -5,7 +6,6 @@ from src.memory.conversation import ConversationMemory
 from src.tools.registry import ToolRegistry
 from src.tools.executor import ToolExecutor
 from src.rag.retriever import Retriever
-from src.db.repository import CustomerRepository, TransactionRepository, CardRepository
 from src.agent.intent_extractor import IntentExtractor, CHAINABLE_PAIRS
 from src.agent.prompts import (
     MULTI_CARD_CLARIFICATION,
@@ -103,17 +103,35 @@ class AgentOrchestrator:
         self.memory.add("assistant", response)
         return response
 
-    # ── Intent → Data execution ───────────────────────────────────────────────
+    # ── Intent → Tool dispatch table ──────────────────────────────────────────
+    # Maps intent name → (tool_name, args_builder).
+    # Adding a new intent is a one-line change here + a handler in banking.py.
+
+    _INTENT_TO_TOOL = {
+        "check_balance":       ("account_info",        lambda e, u: {"action": "balance",  "account_no": e.get("account_no")}),
+        "account_details":     ("account_info",        lambda e, u: {"action": "details",  "account_no": e.get("account_no")}),
+        "account_types":       ("account_info",        lambda e, u: {"action": "types"}),
+        "check_transactions":  ("transaction_history", lambda e, u: {"action": "recent",   "account_no": e.get("account_no"), "limit": int(e.get("limit") or 5)}),
+        "transaction_summary": ("transaction_history", lambda e, u: {"action": "summary",  "account_no": e.get("account_no")}),
+        "product_search":      ("search_products",     lambda e, u: {"query": e.get("query", u)}),
+        "loan_info":           ("search_products",     lambda e, u: {"query": e.get("loan_type") or "loan products",          "category": "loans"}),
+        "investment_info":     ("search_products",     lambda e, u: {"query": e.get("product_type") or "investment products", "category": "investments"}),
+        "savings_info":        ("search_products",     lambda e, u: {"query": e.get("account_type") or "savings account",    "category": "savings"}),
+        "card_info":           ("search_products",     lambda e, u: {"query": "debit card", "category": "cards"}),
+        "calculate":           ("calculate",           lambda e, u: {
+            "calculation_type": e.get("calculation_type"),
+            "principal":        float(e.get("principal", 0)),
+            "rate":             float(e.get("rate", 0)),
+            "tenure_months":    int(e.get("tenure_months", 0)),
+        }),
+    }
 
     # Personal-data keywords that should never route to RAG product search
     _PERSONAL_SIGNALS = frozenset(["my transaction", "my transfer", "my payment", "my last", "my recent",
                                     "my balance", "my account", "i spent", "i paid", "i transferred"])
 
     def _execute_intent(self, intent: str, entities: dict, user_input: str) -> str:
-        account_no = entities.get("account_no")
-
-        # Guard: if a RAG intent was extracted but the query is clearly about
-        # the customer's own data, reroute to the correct personal-data intent.
+        # Guard: reroute personal-data queries misclassified as product_search
         if intent == "product_search":
             lower = user_input.lower()
             if any(sig in lower for sig in self._PERSONAL_SIGNALS):
@@ -124,127 +142,45 @@ class AgentOrchestrator:
                     logger.warning("intent_rerouted", extra={"from": "product_search", "to": "check_balance", "query": user_input[:80]})
                     intent = "check_balance"
 
-        if intent == "check_balance":
-            customer = CustomerRepository.get_by_account_no(account_no)
-            if customer:
-                return (
-                    f"Customer name is {customer['account_name']}. "
-                    f"Account type is {customer['account_type']}. "
-                    f"Current balance is {customer['currency']} {customer['current_balance']:,.2f}."
-                )
-            return "No account found with that account number."
+        if intent == "block_card":
+            return self._handle_block_card(entities.get("account_no"), entities)
 
-        elif intent == "account_details":
-            customer = CustomerRepository.get_by_account_no(account_no)
-            if customer:
-                return (
-                    f"Customer name is {customer['account_name']}. "
-                    f"Account number is {customer['account_no']}. "
-                    f"Account type is {customer['account_type']}. "
-                    f"Product is {customer['product_description']}. "
-                    f"Currency is {customer['currency']}. "
-                    f"Current balance is {customer['currency']} {customer['current_balance']:,.2f}. "
-                    f"Account opened on {customer['account_open_date']}."
-                )
-            return "No account found with that account number."
-
-        elif intent == "check_transactions":
-            limit = int(entities.get("limit") or 5)
-            transactions = TransactionRepository.get_recent(account_no, n=limit)
-            if not transactions:
-                return "No transactions found for this account."
-            lines = [f"Here are the {len(transactions)} most recent transactions:"]
-            for i, txn in enumerate(transactions, 1):
-                lines.append(
-                    f"{i}. On {txn['transaction_date']}, a {txn['transaction_type']} "
-                    f"of NGN {txn['transaction_amount']:,.2f} for '{txn['narration']}' "
-                    f"— status: {txn['transaction_status']}."
-                )
-            return "\n".join(lines)
-
-        elif intent == "transaction_summary":
-            summary = TransactionRepository.get_summary(account_no)
-            if not summary or summary.get("total_transactions", 0) == 0:
-                return "No transaction history found for this account."
-            return (
-                f"Total number of transactions is {summary['total_transactions']}. "
-                f"Total credits amount to NGN {summary['total_credits'] or 0:,.2f}. "
-                f"Total debits amount to NGN {summary['total_debits'] or 0:,.2f}. "
-                f"Number of failed transactions is {summary['failed_count']}."
-            )
-
-        elif intent == "account_types":
-            return (
-                "Globus Bank offers the following account types: "
-                "Savings Account (personal savings, 4.05% interest), "
-                "Current Account (frequent transactions, cheque book), "
-                "Domiciliary Account (foreign currency in USD, EUR, GBP), "
-                "Kiddies Account (for children), "
-                "and Non-Resident Account (for Nigerians abroad)."
-            )
-
-        elif intent == "product_search":
-            query = entities.get("query", user_input)
-            if self.retriever:
-                results = self.retriever.retrieve(query, limit=3)
-                return self.retriever.format_context(results) or "No relevant products found."
+        if intent == "general_chat":
             return ""
 
-        elif intent == "loan_info":
-            query = entities.get("loan_type") or "loan products"
-            if self.retriever:
-                results = self.retriever.retrieve(query, limit=3, category="loans")
-                return self.retriever.format_context(results) or (
-                    "Available loans: Salary Advance, Home Extension, Personal, Business, "
-                    "Mortgage, Vehicle, Overdraft, Working Capital."
-                )
+        mapping = self._INTENT_TO_TOOL.get(intent)
+        if not mapping:
             return ""
 
-        elif intent == "investment_info":
-            query = entities.get("product_type") or "investment products"
-            if self.retriever:
-                results = self.retriever.retrieve(query, limit=3, category="investments")
-                return self.retriever.format_context(results) or (
-                    "Available investments: Bonds, Commercial Papers, Money Market Deposits, Treasury Bills."
-                )
+        tool_name, args_fn = mapping
+        try:
+            args = args_fn(entities, user_input)
+        except (TypeError, ValueError) as exc:
+            logger.warning("intent_args_error", extra={"intent": intent, "error": str(exc)})
             return ""
 
-        elif intent == "savings_info":
-            query = entities.get("account_type") or "savings account"
-            if self.retriever:
-                results = self.retriever.retrieve(query, limit=3, category="savings")
-                return self.retriever.format_context(results) or (
-                    "Available accounts: Domiciliary, Kiddies, Savings, Current, Non-Resident."
-                )
+        result = self.tool_executor.execute(tool_name, args)
+        if result.startswith("Error:"):
+            logger.error("tool_execution_error", extra={"tool": tool_name, "result": result[:120]})
             return ""
-
-        elif intent == "card_info":
-            if self.retriever:
-                results = self.retriever.retrieve("debit card", limit=2, category="cards")
-                return self.retriever.format_context(results) or (
-                    "Globus Bank offers Verve, Visa, and MasterCard debit cards with chip + PIN security."
-                )
-            return ""
-
-        elif intent == "block_card":
-            return self._handle_block_card(account_no, entities)
-
-        elif intent == "calculate":
-            return self._handle_calculate(entities)
-
-        # general_chat — no data, handled by LLM directly
-        return ""
+        return result
 
     # ── Card blocking (multi-step, kept separate) ─────────────────────────────
 
     def _handle_block_card(self, account_no: str, entities: dict) -> str:
-        active_cards = CardRepository.get_active_cards(account_no)
+        raw = self.tool_executor.execute("block_card", {"action": "get_active", "account_no": account_no})
 
-        if not active_cards:
+        if raw == "NO_ACTIVE_CARDS" or raw.startswith("Error:"):
             return (
                 "__DIRECT_RESPONSE__:I couldn't find any active cards linked to your account. "
                 "Please visit a branch or call customer service for assistance."
             )
+
+        try:
+            active_cards = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            logger.error("block_card_parse_error", extra={"raw": raw[:100]})
+            return "__DIRECT_RESPONSE__:Unable to retrieve card information. Please try again."
 
         card_last_four = entities.get("card_last_four")
 
@@ -288,50 +224,6 @@ class AgentOrchestrator:
             reason=entities.get("reason", "Not specified"),
         )
         return f"__DIRECT_RESPONSE__:{response}"
-
-    def _handle_calculate(self, entities: dict) -> str:
-        try:
-            calc_type = entities.get("calculation_type")
-            principal = float(entities.get("principal", 0))
-            rate = float(entities.get("rate", 0))
-            tenure = int(entities.get("tenure_months", 0))
-
-            if calc_type == "loan_emi":
-                monthly_rate = rate / 100 / 12
-                if monthly_rate == 0:
-                    emi = principal / tenure
-                else:
-                    emi = (
-                        principal
-                        * monthly_rate
-                        * ((1 + monthly_rate) ** tenure)
-                        / (((1 + monthly_rate) ** tenure) - 1)
-                    )
-                total = emi * tenure
-                interest = total - principal
-                return (
-                    f"For a loan of NGN {principal:,.2f} at {rate}% per annum over {tenure} months: "
-                    f"monthly EMI is NGN {emi:,.2f}, total repayment is NGN {total:,.2f}, "
-                    f"and total interest is NGN {interest:,.2f}."
-                )
-
-            elif calc_type == "investment_return":
-                final = principal * ((1 + rate / 100) ** (tenure / 12))
-                returns = final - principal
-                return (
-                    f"For an investment of NGN {principal:,.2f} at {rate}% per annum over {tenure} months: "
-                    f"final value is NGN {final:,.2f} and total return is NGN {returns:,.2f}."
-                )
-
-            elif calc_type == "interest":
-                interest = principal * (rate / 100) * (tenure / 12)
-                return (
-                    f"Simple interest on NGN {principal:,.2f} at {rate}% per annum over {tenure} months "
-                    f"is NGN {interest:,.2f}."
-                )
-        except (TypeError, ValueError, ZeroDivisionError):
-            pass
-        return "Could not calculate — please check the values provided."
 
     # ── Confirmation handling (card blocking) ─────────────────────────────────
 
@@ -446,28 +338,15 @@ class AgentOrchestrator:
             self.pending_action = None
 
             if is_confirmed:
-                card = CardRepository.get_by_last_four(args["account_no"], args["card_last_four"])
-                if not card:
-                    response = "Card not found. Please verify the details and try again."
-                elif card["status"] == "Blocked":
-                    response = (
-                        f"Your {args['card_type']} ending in {args['card_last_four']} "
-                        f"is already blocked. No further action is needed."
-                    )
-                else:
-                    success = CardRepository.block_card(card["id"])
-                    if success:
-                        response = (
-                            f"Your {args['card_type']} ending in {args['card_last_four']} "
-                            f"has been successfully blocked.\n\n"
-                            f"Next steps:\n"
-                            f"1. If lost/stolen, file a police report\n"
-                            f"2. Visit any Globus Bank branch for a replacement\n"
-                            f"3. Replacement ready in 3–5 business days\n\n"
-                            f"Reference: BLK{args['account_no'][-4:]}{args['card_last_four']}"
-                        )
-                    else:
-                        response = "Failed to block the card. Please visit a branch or call customer service."
+                result = self.tool_executor.execute("block_card", {
+                    "action": "block",
+                    "account_no": args["account_no"],
+                    "card_last_four": args["card_last_four"],
+                    "reason": args["reason"],
+                    "confirmed": True,
+                })
+                # Tool returns "SUCCESS\n{message}" on success, plain message otherwise
+                response = result.removeprefix("SUCCESS\n") if result.startswith("SUCCESS\n") else result
             else:
                 response = "Card blocking has been cancelled. Your card remains active. Is there anything else I can help you with?"
 

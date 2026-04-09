@@ -366,6 +366,13 @@ def create_banking_tools(
                 )
                 return f"MULTIPLE_CARDS:{card_list}"
 
+        elif action == "get_active" and account_no:
+            import json as _json
+            active_cards = CardRepository.get_active_cards(account_no)
+            if not active_cards:
+                return "NO_ACTIVE_CARDS"
+            return _json.dumps(active_cards)
+
         elif action == "block" and account_no and card_last_four:
             card = CardRepository.get_by_last_four(account_no, card_last_four)
             if not card:
@@ -404,7 +411,7 @@ def create_banking_tools(
             name="block_card",
             description="Block a customer's debit or credit card. Handles multiple cards scenario.",
             parameters=[
-                ToolParam("action", "string", "Action to perform", enum=["list_cards", "check_multiple", "block"]),
+                ToolParam("action", "string", "Action to perform", enum=["list_cards", "check_multiple", "get_active", "block"]),
                 ToolParam("account_no", "string", "Customer account number", required=False),
                 ToolParam("card_last_four", "string", "Last 4 digits of card", required=False),
                 ToolParam("reason", "string", "Reason for blocking", required=False),
