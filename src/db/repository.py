@@ -1,18 +1,17 @@
-from datetime import datetime
-from src.db.schema import get_connection
+from src.db.schema import get_connection, timed_query
 
 
 class CustomerRepository:
     @staticmethod
     def get_by_account_no(account_no: str) -> dict | None:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM customer WHERE account_no = ?",
-            (account_no,),
-        )
-        row = cursor.fetchone()
-        conn.close()
+        with timed_query("customer.get_by_account_no"):
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM customer WHERE account_no = ?",
+                (account_no,),
+            )
+            row = cursor.fetchone()
         return dict(row) if row else None
 
     @staticmethod
@@ -21,7 +20,6 @@ class CustomerRepository:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM customer WHERE id = ?", (customer_id,))
         row = cursor.fetchone()
-        conn.close()
         return dict(row) if row else None
 
     @staticmethod
@@ -33,7 +31,6 @@ class CustomerRepository:
             (f"%{name}%",),
         )
         rows = cursor.fetchall()
-        conn.close()
         return [dict(row) for row in rows]
 
     @staticmethod
@@ -45,7 +42,6 @@ class CustomerRepository:
             (account_no,),
         )
         row = cursor.fetchone()
-        conn.close()
         return row["current_balance"] if row else None
 
 
@@ -75,32 +71,31 @@ class TransactionRepository:
 
         cursor.execute(query, params)
         rows = cursor.fetchall()
-        conn.close()
         return [dict(row) for row in rows]
 
     @staticmethod
     def get_recent(account_no: str, n: int = 5) -> list[dict]:
-        return TransactionRepository.get_by_account(account_no, limit=n)
+        with timed_query("transaction.get_recent"):
+            return TransactionRepository.get_by_account(account_no, limit=n)
 
     @staticmethod
     def get_summary(account_no: str) -> dict:
-        conn = get_connection()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT
-                COUNT(*) as total_transactions,
-                SUM(CASE WHEN transaction_type = 'Credit' THEN transaction_amount ELSE 0 END) as total_credits,
-                SUM(CASE WHEN transaction_type = 'Debit' THEN ABS(transaction_amount) ELSE 0 END) as total_debits,
-                COUNT(CASE WHEN transaction_status = 'Failed' THEN 1 END) as failed_count
-            FROM transaction_history
-            WHERE account_no = ?
-        """,
-            (account_no,),
-        )
-        row = cursor.fetchone()
-        conn.close()
+        with timed_query("transaction.get_summary"):
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*) as total_transactions,
+                    SUM(CASE WHEN transaction_type = 'Credit' THEN transaction_amount ELSE 0 END) as total_credits,
+                    SUM(CASE WHEN transaction_type = 'Debit' THEN ABS(transaction_amount) ELSE 0 END) as total_debits,
+                    COUNT(CASE WHEN transaction_status = 'Failed' THEN 1 END) as failed_count
+                FROM transaction_history
+                WHERE account_no = ?
+            """,
+                (account_no,),
+            )
+            row = cursor.fetchone()
         return dict(row) if row else {}
 
 
@@ -114,19 +109,18 @@ class CardRepository:
             (account_no,),
         )
         rows = cursor.fetchall()
-        conn.close()
         return [dict(row) for row in rows]
 
     @staticmethod
     def get_active_cards(account_no: str) -> list[dict]:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM card WHERE account_no = ? AND status = 'Active'",
-            (account_no,),
-        )
-        rows = cursor.fetchall()
-        conn.close()
+        with timed_query("card.get_active_cards"):
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM card WHERE account_no = ? AND status = 'Active'",
+                (account_no,),
+            )
+            rows = cursor.fetchall()
         return [dict(row) for row in rows]
 
     @staticmethod
@@ -138,7 +132,6 @@ class CardRepository:
             (account_no, last_four),
         )
         row = cursor.fetchone()
-        conn.close()
         return dict(row) if row else None
 
     @staticmethod
@@ -151,7 +144,6 @@ class CardRepository:
         )
         affected = cursor.rowcount
         conn.commit()
-        conn.close()
         return affected > 0
 
     @staticmethod
@@ -164,5 +156,4 @@ class CardRepository:
         )
         affected = cursor.rowcount
         conn.commit()
-        conn.close()
         return affected > 0

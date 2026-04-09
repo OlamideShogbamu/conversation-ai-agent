@@ -6,8 +6,30 @@ from src.inference.llm import LLMEngine
 # Simple key-value format — small models handle this far better than JSON
 INTENT_PROMPT = """Classify the banking customer message. Reply with ONLY the lines below filled in. No extra text.
 
-intents: check_balance, check_transactions, transaction_summary, account_details, account_types, product_search, loan_info, investment_info, savings_info, card_info, block_card, calculate, general_chat
-chain_intent: only fill if the query clearly needs TWO steps (e.g. "check my balance and calculate if I can afford a loan" → chain_intent: calculate). Valid chain_intents: calculate, investment_info, loan_info, check_transactions. Otherwise leave blank.
+INTENT RULES (read carefully):
+- check_balance: customer asks about their OWN account balance or funds ("my balance", "how much do I have")
+- check_transactions: customer asks about their OWN past transactions, payments, or transfer history ("my last transaction", "recent transfers", "what did I spend", "show my transactions")
+- transaction_summary: customer asks for a summary/total of their OWN transactions ("total credits", "how much have I spent", "transaction history overview")
+- account_details: customer asks for their OWN account info (account number, account type, opening date)
+- account_types: customer asks what types of accounts the BANK offers (general product question, no personal data)
+- product_search: customer asks about a BANK PRODUCT or SERVICE in general (not their own account) — e.g. "do you have dollar accounts?", "what is a domiciliary account?"
+- loan_info: customer asks about loan PRODUCTS the bank offers (not their own loan balance)
+- investment_info: customer asks about investment PRODUCTS the bank offers
+- savings_info: customer asks about savings PRODUCTS the bank offers
+- card_info: customer asks about card PRODUCTS the bank offers
+- block_card: customer wants to block/freeze/disable their card
+- calculate: customer wants to calculate EMI, interest, or investment returns
+- general_chat: greetings, complaints, or anything not matching the above
+
+KEY DISTINCTION: "my transactions / my balance / my account" → personal data intent (check_transactions, check_balance, account_details). "your products / what loans / what accounts do you offer" → product intent (product_search, loan_info, savings_info).
+
+Examples:
+Customer: show me my last transaction → intent: check_transactions
+Customer: what were my recent transfers → intent: check_transactions
+Customer: what is my account balance → intent: check_balance
+Customer: do you have a current account → intent: account_types
+Customer: tell me about your savings account → intent: savings_info
+Customer: what transaction accounts do you offer → intent: account_types
 
 Recent conversation:
 {history}

@@ -13,6 +13,9 @@ from src.agent.prompts import (
     build_response_prompt,
     build_general_chat_prompt,
 )
+from src.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class AgentOrchestrator:
@@ -35,14 +38,14 @@ class AgentOrchestrator:
         history = self.memory.format_for_prompt()
 
         # ── Stage 1: Extract intent (3-vote majority) ────────────────────────
-        print(f"\n[Agent] Stage 1: extracting intent...", flush=True)
+        logger.info("stage_start", extra={"stage": 1, "description": "intent extraction"})
         intent, entities, confidence = self.intent_extractor.extract(user_input, history)
-        print(f"[Agent] Intent={intent}, confidence={confidence}", flush=True)
+        logger.info("intent_extracted", extra={"intent": intent, "confidence": confidence, "entities": entities})
 
         # Pop chain_intent before clarification check (it's optional, never blocks)
         chain_intent = entities.pop("chain_intent", None)
         if chain_intent:
-            print(f"[Agent] Chain intent detected: {chain_intent}", flush=True)
+            logger.info("chain_intent_detected", extra={"chain_intent": chain_intent})
 
         # ── Clarification gate — only block if required entities are missing ──
         missing = self.intent_extractor.get_missing_entities(intent, entities)
@@ -50,11 +53,11 @@ class AgentOrchestrator:
             clarification = self.intent_extractor.get_clarification_question(missing)
             self.memory.add("user", user_input)
             self.memory.add("assistant", clarification)
-            print(f"[Agent] Clarifying — missing: {missing}", flush=True)
+            logger.info("clarification_required", extra={"missing_entities": missing})
             return clarification
 
         # ── Stage 2: Execute intent (direct DB/retriever, no LLM) ────────────
-        print(f"[Agent] Stage 2: executing intent...", flush=True)
+        logger.info("stage_start", extra={"stage": 2, "description": "intent execution", "intent": intent})
         t2 = time.time()
         tool_result = self._execute_intent(intent, entities, user_input)
 
@@ -65,39 +68,36 @@ class AgentOrchestrator:
             and tool_result
             and not tool_result.startswith("__DIRECT_RESPONSE__:")
         ):
-            print(f"[Agent] Stage 2b: chaining → {chain_intent}...", flush=True)
+            logger.info("stage_start", extra={"stage": "2b", "description": f"chain intent → {chain_intent}"})
             chain_result = self._execute_intent(chain_intent, entities, user_input)
             if chain_result and not chain_result.startswith("__DIRECT_RESPONSE__:"):
                 tool_result = f"{tool_result}\n\n{chain_result}"
-                print(f"[Agent] Chain executed successfully", flush=True)
+                logger.info("chain_intent_complete", extra={"chain_intent": chain_intent})
 
-        print(f"[Agent] Stage 2 done ({time.time() - t2:.1f}s)", flush=True)
+        logger.info("stage_done", extra={"stage": 2, "duration_s": round(time.time() - t2, 2)})
 
         # Short-circuit for direct responses (e.g. card blocking confirmation prompts)
         if isinstance(tool_result, str) and tool_result.startswith("__DIRECT_RESPONSE__:"):
             response = tool_result.removeprefix("__DIRECT_RESPONSE__:")
             self.memory.add("user", user_input)
             self.memory.add("assistant", response)
-            print(f"[Agent] Total time: {time.time() - request_start:.1f}s", flush=True)
+            logger.info("request_complete", extra={"path": "direct_response", "total_s": round(time.time() - request_start, 2)})
             return response
 
         # ── Stage 3: Format response (focused LLM call) ───────────────────────
+        t3 = time.time()
         if tool_result:
-            print(f"[Agent] Stage 3: formatting response...", flush=True)
-            t3 = time.time()
+            logger.info("stage_start", extra={"stage": 3, "description": "response formatting (tool result)"})
             prompt = build_response_prompt(user_input, tool_result)
             response = self.llm.generate(prompt, stop=["Customer:", "\nCustomer:", "Data retrieved"])
-            print(f"[Agent] Stage 3 done ({time.time() - t3:.1f}s)", flush=True)
         else:
-            # general_chat or no data — use conversation-aware prompt
-            print(f"[Agent] Stage 3: general chat response...", flush=True)
-            t3 = time.time()
+            logger.info("stage_start", extra={"stage": 3, "description": "general chat response"})
             prompt = build_general_chat_prompt(user_input, history)
             response = self.llm.generate(prompt, stop=["Customer:", "\nCustomer:"])
-            print(f"[Agent] Stage 3 done ({time.time() - t3:.1f}s)", flush=True)
 
+        logger.info("stage_done", extra={"stage": 3, "duration_s": round(time.time() - t3, 2)})
         response = response.strip()
-        print(f"[Agent] Total time: {time.time() - request_start:.1f}s", flush=True)
+        logger.info("request_complete", extra={"path": "llm_response", "total_s": round(time.time() - request_start, 2), "token_usage": self.get_token_usage()})
 
         self.memory.add("user", user_input)
         self.memory.add("assistant", response)
@@ -105,8 +105,24 @@ class AgentOrchestrator:
 
     # ── Intent → Data execution ───────────────────────────────────────────────
 
+    # Personal-data keywords that should never route to RAG product search
+    _PERSONAL_SIGNALS = frozenset(["my transaction", "my transfer", "my payment", "my last", "my recent",
+                                    "my balance", "my account", "i spent", "i paid", "i transferred"])
+
     def _execute_intent(self, intent: str, entities: dict, user_input: str) -> str:
         account_no = entities.get("account_no")
+
+        # Guard: if a RAG intent was extracted but the query is clearly about
+        # the customer's own data, reroute to the correct personal-data intent.
+        if intent == "product_search":
+            lower = user_input.lower()
+            if any(sig in lower for sig in self._PERSONAL_SIGNALS):
+                if "transaction" in lower or "transfer" in lower or "payment" in lower:
+                    logger.warning("intent_rerouted", extra={"from": "product_search", "to": "check_transactions", "query": user_input[:80]})
+                    intent = "check_transactions"
+                elif "balance" in lower:
+                    logger.warning("intent_rerouted", extra={"from": "product_search", "to": "check_balance", "query": user_input[:80]})
+                    intent = "check_balance"
 
         if intent == "check_balance":
             customer = CustomerRepository.get_by_account_no(account_no)
@@ -319,15 +335,15 @@ class AgentOrchestrator:
 
     # ── Confirmation handling (card blocking) ─────────────────────────────────
 
+    _CANCEL_WORDS = frozenset({"no", "n", "cancel", "nope", "stop", "nevermind", "never", "don't", "dont", "abort"})
+    _CONFIRM_WORDS = frozenset({"yes", "y", "confirm", "sure", "ok", "okay", "proceed", "go", "block"})
+
     def _is_confirmation_response(self, user_input: str) -> bool:
         if not self.pending_action:
             return False
-        # Any reply routes through pending handler when awaiting card selection
-        if self.pending_action["type"] == "select_card":
-            return True
-        # For confirmation prompts accept "yes"/"no" even with trailing words
-        first_word = user_input.lower().strip().split()[0] if user_input.strip() else ""
-        return first_word in {"yes", "no", "confirm", "cancel", "y", "n"}
+        # Any reply is intercepted when awaiting card selection or confirmation —
+        # this ensures we can re-prompt rather than leaking into general chat.
+        return self.pending_action["type"] in {"select_card", "block_card"}
 
     def _handle_confirmation(self, user_input: str) -> str:
         if not self.pending_action:
@@ -337,15 +353,43 @@ class AgentOrchestrator:
         if self.pending_action["type"] == "select_card":
             args = self.pending_action["args"]
             text = user_input.lower()
+            first_word = text.strip().split()[0] if text.strip() else ""
 
-            # Try to match by last-four digits or card issuer/type
-            matched = next(
-                (c for c in args["active_cards"]
-                 if c["card_last_four"] in text
-                 or c["card_issuer"].lower() in text
-                 or c["card_type"].lower() in text),
-                None,
-            )
+            # Allow customer to cancel at the card-selection stage
+            if first_word in self._CANCEL_WORDS:
+                self.pending_action = None
+                response = "Card blocking has been cancelled. Your cards remain active. Is there anything else I can help you with?"
+                self.memory.add("user", user_input)
+                self.memory.add("assistant", response)
+                return response
+
+            # Match by last-four digits (most specific) first, then issuer/type
+            last_four_match = next((c for c in args["active_cards"] if c["card_last_four"] in text), None)
+            if last_four_match:
+                matched = last_four_match
+            else:
+                # Collect all cards whose issuer or type appears in the text
+                broad_matches = [
+                    c for c in args["active_cards"]
+                    if c["card_issuer"].lower() in text or c["card_type"].lower() in text
+                ]
+                if len(broad_matches) == 1:
+                    matched = broad_matches[0]
+                elif len(broad_matches) > 1:
+                    # Ambiguous — multiple cards share the same issuer/type keyword
+                    card_list = "\n".join(
+                        f"- {c['card_issuer']} {c['card_type']} ending in {c['card_last_four']}"
+                        for c in broad_matches
+                    )
+                    response = (
+                        f"I found {len(broad_matches)} cards matching that description. "
+                        f"Please specify the last 4 digits to avoid blocking the wrong card:\n{card_list}"
+                    )
+                    self.memory.add("user", user_input)
+                    self.memory.add("assistant", response)
+                    return response
+                else:
+                    matched = None
 
             if not matched:
                 card_list = "\n".join(
@@ -379,15 +423,38 @@ class AgentOrchestrator:
             self.memory.add("assistant", response)
             return response
 
-        is_confirmed = user_input.lower().strip().split()[0] in {"yes", "confirm", "y"}
+        first_word = user_input.lower().strip().split()[0] if user_input.strip() else ""
 
         if self.pending_action["type"] == "block_card":
             args = self.pending_action["args"]
+
+            is_confirmed = first_word in self._CONFIRM_WORDS
+            is_declined = first_word in self._CANCEL_WORDS
+
+            if not is_confirmed and not is_declined:
+                # Unrecognised reply — re-prompt without clearing pending_action
+                response = (
+                    f"Sorry, I didn't catch that. Please reply:\n"
+                    f"- \"Yes\" to confirm blocking your {args['card_type']} ending in {args['card_last_four']}\n"
+                    f"- \"No\" to cancel"
+                )
+                self.memory.add("user", user_input)
+                self.memory.add("assistant", response)
+                return response
+
+            # Clear pending_action only after we know the intent
             self.pending_action = None
 
             if is_confirmed:
                 card = CardRepository.get_by_last_four(args["account_no"], args["card_last_four"])
-                if card:
+                if not card:
+                    response = "Card not found. Please verify the details and try again."
+                elif card["status"] == "Blocked":
+                    response = (
+                        f"Your {args['card_type']} ending in {args['card_last_four']} "
+                        f"is already blocked. No further action is needed."
+                    )
+                else:
                     success = CardRepository.block_card(card["id"])
                     if success:
                         response = (
@@ -401,8 +468,6 @@ class AgentOrchestrator:
                         )
                     else:
                         response = "Failed to block the card. Please visit a branch or call customer service."
-                else:
-                    response = "Card not found. Please verify the details and try again."
             else:
                 response = "Card blocking has been cancelled. Your card remains active. Is there anything else I can help you with?"
 
@@ -422,5 +487,6 @@ class AgentOrchestrator:
     def get_conversation_summary(self) -> str:
         return self.memory.summary
 
-    def get_token_usage(self) -> int:
-        return self.memory.get_token_usage()
+    def get_token_usage(self) -> dict:
+        """Return actual LLM token counts (prompt + completion) for this session."""
+        return self.llm.get_token_usage()

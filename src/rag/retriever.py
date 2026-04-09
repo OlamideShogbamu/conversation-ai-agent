@@ -2,6 +2,9 @@ import time
 
 from src.memory.vector_store import VectorStore
 from src.inference.embedder import Embedder
+from src.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class Retriever:
@@ -16,17 +19,28 @@ class Retriever:
         category: str | None = None,
         score_threshold: float = 0.50,
     ) -> list[dict]:
-        print(f"[RAG] Embedding query: '{query[:60]}'...", flush=True)
         t0 = time.time()
         query_vector = self.embedder.embed(query)
-        print(f"[RAG] Embedding done ({time.time() - t0:.1f}s), searching vector store...", flush=True)
+        embed_ms = round((time.time() - t0) * 1000)
+
         results = self.vector_store.search(
             query_vector=query_vector,
             limit=limit,
             category=category,
         )
         filtered = [r for r in results if r.get("score", 0) >= score_threshold]
-        print(f"[RAG] Retrieved {len(filtered)} result(s) above threshold (score >= {score_threshold})", flush=True)
+
+        logger.info(
+            "rag_retrieve",
+            extra={
+                "query": query[:80],
+                "category": category,
+                "embed_ms": embed_ms,
+                "results_total": len(results),
+                "results_above_threshold": len(filtered),
+                "score_threshold": score_threshold,
+            },
+        )
         return filtered
 
     def format_context(self, results: list[dict]) -> str:

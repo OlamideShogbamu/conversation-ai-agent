@@ -1,4 +1,5 @@
 import re
+import time
 
 from llama_cpp import Llama
 from config.settings import (
@@ -10,13 +11,28 @@ from config.settings import (
     LLM_THREADS,
     LLM_BATCH_SIZE,
 )
+from src.logger import get_logger
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+logger = get_logger(__name__)
 
 
 class LLMEngine:
     def __init__(self):
         self.model = None
+        self._prompt_tokens: int = 0
+        self._completion_tokens: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self._prompt_tokens + self._completion_tokens
+
+    def get_token_usage(self) -> dict:
+        return {
+            "prompt_tokens": self._prompt_tokens,
+            "completion_tokens": self._completion_tokens,
+            "total_tokens": self.total_tokens,
+        }
 
     def load(self):
         self.model = Llama(
@@ -52,6 +68,7 @@ class LLMEngine:
         temperature: float = LLM_TEMPERATURE,
         top_p: float = LLM_TOP_P,
         stop: list[str] | None = None,
+        max_retries: int = 2,
     ) -> str:
         if self.model is None:
             raise RuntimeError("Model not loaded. Call load() first.")
@@ -59,14 +76,43 @@ class LLMEngine:
         qwen_stop = ["<|im_end|>", "<|endoftext|>"]
         all_stop = list(dict.fromkeys((stop or []) + qwen_stop))
 
-        response = self.model(
-            self._wrap_chatml(prompt),
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            stop=all_stop,
-        )
-        return self._strip_thinking(response["choices"][0]["text"])
+        last_exc: Exception | None = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = self.model(
+                    self._wrap_chatml(prompt),
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    stop=all_stop,
+                )
+                usage = response.get("usage", {})
+                self._prompt_tokens += usage.get("prompt_tokens", 0)
+                self._completion_tokens += usage.get("completion_tokens", 0)
+                logger.info(
+                    "llm_generate",
+                    extra={
+                        "attempt": attempt,
+                        "prompt_tokens": usage.get("prompt_tokens"),
+                        "completion_tokens": usage.get("completion_tokens"),
+                        "total_tokens_session": self.total_tokens,
+                    },
+                )
+                text = self._strip_thinking(response["choices"][0]["text"])
+                if text:
+                    return text
+                # Empty output — retry
+                logger.warning("llm_empty_response", extra={"attempt": attempt})
+            except Exception as exc:
+                last_exc = exc
+                logger.warning("llm_generate_error", extra={"attempt": attempt, "error": str(exc)})
+
+            if attempt < max_retries:
+                time.sleep(1)
+
+        if last_exc:
+            raise last_exc
+        return ""  # all retries yielded empty text
 
     def generate_stream(
         self,

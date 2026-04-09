@@ -8,9 +8,11 @@ from src.tools.banking import create_banking_tools
 from src.rag.retriever import Retriever
 from src.agent.orchestrator import AgentOrchestrator
 from src.db.schema import init_db
+from src.logger import get_logger
 from config.settings import BASE_DIR
 
 app = Flask(__name__)
+logger = get_logger(__name__)
 
 # Initialize components once at startup
 llm = None
@@ -21,7 +23,7 @@ _vector_store = None
 def init_agent():
     global llm, agent, _embedder, _vector_store
 
-    print("Loading models...")
+    logger.info("startup", extra={"event": "loading_models"})
     init_db()
 
     llm = LLMEngine()
@@ -36,7 +38,7 @@ def init_agent():
 
     retriever = Retriever(_vector_store, _embedder)
     agent = AgentOrchestrator(llm, tool_registry, retriever=retriever)
-    print("Agent ready!")
+    logger.info("startup", extra={"event": "agent_ready"})
 
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -59,6 +61,7 @@ def chat():
             "token_usage": agent.get_token_usage()
         })
     except Exception as e:
+        logger.exception("chat_error", extra={"message": user_message[:80]})
         return jsonify({"error": str(e)}), 500
 
 @app.route("/reset", methods=["POST"])
@@ -127,8 +130,27 @@ def ingest():
 
 @app.route("/health", methods=["GET"])
 def health():
-    """Health check endpoint"""
-    return jsonify({"status": "ok", "model_loaded": llm is not None})
+    """Health check endpoint — verifies LLM and embedder are loaded and operational."""
+    issues = []
+
+    llm_ok = llm is not None and llm.model is not None
+    if not llm_ok:
+        issues.append("llm_not_loaded")
+
+    embedder_ok = _embedder is not None and _embedder.model is not None
+    if not embedder_ok:
+        issues.append("embedder_not_loaded")
+
+    if issues:
+        logger.warning("health_check_failed", extra={"issues": issues})
+        return jsonify({"status": "degraded", "issues": issues}), 503
+
+    return jsonify({
+        "status": "ok",
+        "llm": "loaded",
+        "embedder": "loaded",
+        "token_usage": agent.get_token_usage() if agent else None,
+    })
 
 if __name__ == "__main__":
     init_agent()

@@ -1,15 +1,37 @@
 import sqlite3
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from config.settings import BASE_DIR
+from src.logger import get_logger
 
 DB_PATH = BASE_DIR / "data" / "globus.db"
+logger = get_logger(__name__)
+
+_local = threading.local()
 
 
 def get_connection() -> sqlite3.Connection:
+    """Return a per-thread cached SQLite connection, creating one if needed."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
+    conn = getattr(_local, "conn", None)
+    if conn is None:
+        conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        _local.conn = conn
+        logger.info("db_connection_created", extra={"thread": threading.current_thread().name})
     return conn
+
+
+@contextmanager
+def timed_query(operation: str):
+    """Context manager that logs SQLite query duration."""
+    t0 = time.time()
+    try:
+        yield
+    finally:
+        logger.info("db_query", extra={"operation": operation, "duration_ms": round((time.time() - t0) * 1000)})
 
 
 def init_db():
@@ -64,7 +86,6 @@ def init_db():
     )
 
     conn.commit()
-    conn.close()
 
 
 def reset_db():
@@ -79,5 +100,6 @@ def reset_db():
     """
     )
     conn.commit()
-    conn.close()
+    # Invalidate the cached connection for this thread so init_db gets a fresh one
+    _local.conn = None
     init_db()
